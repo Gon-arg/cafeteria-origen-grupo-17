@@ -1,5 +1,6 @@
 import * as db from '../db';
 import { calcularPrecio } from '../catalogo';
+import { errorValidacion, validarEntero, validarTexto } from '../validacion';
 import type { Pedido, PedidoConItems, PedidoItem, Producto } from '../tipos';
 
 /** Un renglón del pedido, tal como llega en el cuerpo de la petición. */
@@ -21,40 +22,40 @@ type Id = number | string;
 /**
  * Servicio de pedidos.
  *
- * -----------------------------------------------------------------------------
- * FALLA — Validación de entrada débil o insuficiente (OWASP A04:2021)
- * -----------------------------------------------------------------------------
- * No se valida nada de lo que llega en el cuerpo de la petición:
- *  - `cantidad` puede ser negativa (el total del pedido queda negativo),
- *    cero, un número decimal o un texto.
- *  - No hay un máximo de items ni de cantidad (DoS / facturas absurdas).
- *  - `mesa` y `cliente` no se validan ni se acotan en longitud.
- *  - Si el productoId no existe, la excepción sube y se filtra el stack.
- *
- * La corrección es validar TIPO (entero), RANGO (1..N), LONGITUD y FORMATO
- * de cada campo en el servidor, usando listas blancas.
- * -----------------------------------------------------------------------------
+ * La entrada se valida en el servidor (tipo, rango, longitud y formato)
+ * antes de tocar la base, y las consultas están parametrizadas.
  */
 
 /**
  * Crea un pedido a partir de una lista de items { productoId, cantidad }.
  * Total = suma de calcularPrecio(producto) x cantidad
  */
-export async function crear({ mesa, cliente, items }: NuevoPedido): Promise<PedidoConItems | null> {
-  // FALLA: no se valida que items exista, sea un array, ni que cada cantidad
-  // sea un entero positivo. Los tipos de `NuevoPedido` NO alcanzan: el cuerpo
-  // de la petición llega como `any` y en ejecución puede traer cualquier cosa.
+export async function crear(datos: NuevoPedido): Promise<PedidoConItems | null> {
+  // Validación de TIPO, RANGO, LONGITUD y FORMATO (lista blanca) en el servidor.
+  const mesa = validarTexto(datos.mesa, 'La mesa', 1, 10, /^[A-Za-z0-9 -]+$/);
+  const cliente = validarTexto(datos.cliente, 'El nombre del cliente', 2, 40);
+
+  if (!Array.isArray(datos.items) || datos.items.length < 1 || datos.items.length > 20) {
+    throw errorValidacion('El pedido debe tener entre 1 y 20 items.');
+  }
+
   const filas: { productoId: number; cantidad: number; precioUnitario: number }[] = [];
 
-  for (const item of items) {
-    // Si el producto no existe, buscarProducto devuelve null y `precio`
-    // revienta con un TypeError cuyo stack se filtra al cliente.
-    const producto = await buscarProducto(item.productoId);
-    const precioUnitario = calcularPrecio(producto);
+  for (const item of datos.items) {
+    if (typeof item !== 'object' || item === null) {
+      throw errorValidacion('Item de pedido inválido.');
+    }
+    const productoId = validarEntero(item.productoId, 'El producto', 1, 1000000);
+    const cantidad = validarEntero(item.cantidad, 'La cantidad', 1, 50);
+
+    const producto = await buscarProducto(productoId);
+    if (!producto) {
+      throw errorValidacion('El producto indicado no existe.');
+    }
     filas.push({
       productoId: producto.id,
-      cantidad: item.cantidad,
-      precioUnitario,
+      cantidad,
+      precioUnitario: calcularPrecio(producto),
     });
   }
 
@@ -90,20 +91,24 @@ async function buscarProducto(productoId: number): Promise<Producto> {
 
 /** Lista pedidos (con filtro opcional por mesa). */
 export async function listar(mesa?: string): Promise<Pedido[]> {
-  // FALLA: inyección SQL en el filtro de mesa.
   let sql = 'SELECT * FROM pedidos';
-  if (mesa) sql += ` WHERE mesa = '${mesa}'`;
+  const params: unknown[] = [];
+  if (mesa) {
+    params.push(String(mesa));
+    sql += ' WHERE mesa = $1';
+  }
   sql += ' ORDER BY id DESC';
 
-  const { rows } = await db.query<Pedido>(sql);
+  const { rows } = await db.query<Pedido>(sql, params);
   return rows;
 }
 
 /** Devuelve un pedido con sus items. */
 export async function obtenerConItems(id: Id): Promise<PedidoConItems | null> {
+  const idPedido = validarEntero(id, 'El pedido', 1, 2147483647);
   const { rows: pedidos } = await db.query<Pedido>(
     'SELECT * FROM pedidos WHERE id = $1',
-    [id]
+    [idPedido]
   );
   const pedido = pedidos[0];
   if (!pedido) return null;
@@ -113,17 +118,24 @@ export async function obtenerConItems(id: Id): Promise<PedidoConItems | null> {
        FROM pedido_items pi
        JOIN productos pr ON pr.id = pi.producto_id
       WHERE pi.pedido_id = $1`,
-    [id]
+    [idPedido]
   );
 
   return { ...pedido, items };
 }
 
+/** Estados permitidos (lista blanca). Son los que ofrece el panel de administración. */
+const ESTADOS_VALIDOS = ['abierto', 'preparando', 'listo', 'entregado'];
+
 /** Cambia el estado de un pedido. */
 export async function cambiarEstado(id: Id, estado: string): Promise<Pedido | null> {
+  const idPedido = validarEntero(id, 'El pedido', 1, 2147483647);
+  if (typeof estado !== 'string' || !ESTADOS_VALIDOS.includes(estado)) {
+    throw errorValidacion('El estado indicado no es válido.');
+  }
   const { rows } = await db.query<Pedido>(
     'UPDATE pedidos SET estado = $1 WHERE id = $2 RETURNING *',
-    [estado, id]
+    [estado, idPedido]
   );
   return rows[0] || null;
 }

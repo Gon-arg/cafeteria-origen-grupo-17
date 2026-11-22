@@ -1,27 +1,12 @@
+import bcrypt from 'bcryptjs';
 import * as db from '../db';
 import type { Usuario } from '../tipos';
 
 /**
  * Servicio de usuarios.
  *
- * -----------------------------------------------------------------------------
- * FALLA — Inyección SQL (OWASP A03:2021)
- * -----------------------------------------------------------------------------
- * La consulta del login concatena el usuario y la contraseña directamente
- * dentro del texto SQL. El motor de PostgreSQL interpreta las comillas y los
- * operadores que venga en la entrada, de modo que la condición se puede
- * reescribir por completo y devolver una fila válida sin conocer la clave.
- *
- * Además:
- *  - La contraseña se compara en texto plano (almacenamiento inseguro).
- *  - El mensaje de error distingue "usuario inexistente" de "contraseña
- *    incorrecta" (enumeración de usuarios).
- *  - No hay límite de intentos (fuerza bruta).
- *
- * Corrección: consultas parametrizadas (`WHERE username = $1 AND password = $2`
- * con bcrypt.compare), mensaje genérico de error, y rate limiting + bloqueo
- * temporal en el endpoint de login.
- * -----------------------------------------------------------------------------
+ * Las credenciales se verifican con consultas parametrizadas y las
+ * contraseñas se guardan hasheadas con bcrypt (salt por usuario).
  */
 
 /** Busca un usuario por nombre de usuario exacto (query parametrizada). */
@@ -38,10 +23,11 @@ export async function buscarPorUsername(username: string): Promise<Usuario | nul
  * Devuelve el usuario o null.
  */
 export async function autenticar(username: string, password: string): Promise<Usuario | null> {
-  // FALLA: inyección SQL — la entrada del usuario se concatena en la consulta.
-  const sql = `SELECT * FROM usuarios WHERE username = '${username}' AND password = '${password}'`;
-  const { rows } = await db.query<Usuario>(sql);
-  return rows[0] || null;
+  const usuario = await buscarPorUsername(String(username));
+  if (!usuario) return null;
+
+  const coincide = await bcrypt.compare(String(password), usuario.password);
+  return coincide ? usuario : null;
 }
 
 /** Lista todos los usuarios (para el panel de administración). */
@@ -73,11 +59,12 @@ export async function actualizar(id: number | string, cambios: Partial<Usuario>)
   return rows[0] || null;
 }
 
-/** Cambia la contraseña de un usuario (se guarda en texto plano). */
+/** Cambia la contraseña de un usuario (se guarda hasheada con bcrypt). */
 export async function cambiarPassword(id: number, nuevaPassword: string): Promise<Usuario | null> {
+  const hash = await bcrypt.hash(nuevaPassword, 12);
   const { rows } = await db.query<Usuario>(
     'UPDATE usuarios SET password = $1 WHERE id = $2 RETURNING *',
-    [nuevaPassword, id]
+    [hash, id]
   );
   return rows[0] || null;
 }
