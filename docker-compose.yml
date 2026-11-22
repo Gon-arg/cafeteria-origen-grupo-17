@@ -22,11 +22,9 @@ services:
     environment:
       POSTGRES_DB: origen
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      # VULNERABILIDAD (configuración): se usa una contraseña trivial y la base
-      # de datos acepta conexiones desde cualquier origen ("trust"), sin
-      # contraseña ni cifrado. Corregir → md5/scram-sha-256 + contraseña robusta.
-      POSTGRES_HOST_AUTH_METHOD: trust
+      # Superusuario de administración: contraseña robusta. Sin "trust": la base
+      # exige contraseña (scram-sha-256) a toda conexión por red.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Adm1n_Origen_2024!}
     volumes:
       - datos_origen:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro
@@ -53,12 +51,12 @@ services:
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: origen
-      # VULNERABILIDAD (mínimos privilegios): la aplicación se conecta con el
-      # superusuario `postgres`. Corregir → usar el usuario `origen_app` que
-      # sólo tiene permisos sobre las tablas del catálogo (ver
-      # docker/initdb/02-usuario-aplicacion.sql).
-      DB_USER: postgres
-      DB_PASSWORD: postgres
+      # Mínimos privilegios: la aplicación usa `origen_app`, que sólo tiene
+      # permisos sobre los datos (ver docker/initdb/02-usuario-aplicacion.sql).
+      DB_USER: origen_app
+      DB_PASSWORD: ${DB_PASSWORD:-origen_app_2024}
+      # Secreto de sesión/CSRF. Si queda vacío, la app genera uno aleatorio.
+      SESSION_SECRET: ${SESSION_SECRET:-}
       UPLOADS_DIR: /app/uploads
       # Puerto publicado en el host, sólo para los mensajes de arranque.
       APP_PORT: "${APP_PORT:-8080}"

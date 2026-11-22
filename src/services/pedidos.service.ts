@@ -105,9 +105,10 @@ export async function listar(mesa?: string): Promise<Pedido[]> {
 
 /** Devuelve un pedido con sus items. */
 export async function obtenerConItems(id: Id): Promise<PedidoConItems | null> {
+  const idPedido = validarEntero(id, 'El pedido', 1, 2147483647);
   const { rows: pedidos } = await db.query<Pedido>(
     'SELECT * FROM pedidos WHERE id = $1',
-    [id]
+    [idPedido]
   );
   const pedido = pedidos[0];
   if (!pedido) return null;
@@ -117,17 +118,24 @@ export async function obtenerConItems(id: Id): Promise<PedidoConItems | null> {
        FROM pedido_items pi
        JOIN productos pr ON pr.id = pi.producto_id
       WHERE pi.pedido_id = $1`,
-    [id]
+    [idPedido]
   );
 
   return { ...pedido, items };
 }
 
+/** Estados permitidos (lista blanca). Son los que ofrece el panel de administración. */
+const ESTADOS_VALIDOS = ['abierto', 'preparando', 'listo', 'entregado'];
+
 /** Cambia el estado de un pedido. */
 export async function cambiarEstado(id: Id, estado: string): Promise<Pedido | null> {
+  const idPedido = validarEntero(id, 'El pedido', 1, 2147483647);
+  if (typeof estado !== 'string' || !ESTADOS_VALIDOS.includes(estado)) {
+    throw errorValidacion('El estado indicado no es válido.');
+  }
   const { rows } = await db.query<Pedido>(
     'UPDATE pedidos SET estado = $1 WHERE id = $2 RETURNING *',
-    [estado, id]
+    [estado, idPedido]
   );
   return rows[0] || null;
 }

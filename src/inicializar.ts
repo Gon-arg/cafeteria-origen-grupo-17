@@ -54,8 +54,24 @@ export const USUARIOS_INICIALES: UsuarioInicial[] = [
 
 export async function inicializarBase(): Promise<void> {
   // --- Usuarios -------------------------------------------------------------
+  // Cuentas de ejemplo SÓLO para el entorno de práctica. En producción no se
+  // crean con una clave por defecto: cada una exige su variable de entorno
+  // (PASSWORD_ADMIN, PASSWORD_VALENTINA, ...). Si ya existe el usuario no se
+  // vuelve a hashear (bcrypt es lento a propósito).
+  const esProduccion = process.env.NODE_ENV === 'production';
+
   for (const usuario of USUARIOS_INICIALES) {
-    const hash = await bcrypt.hash(usuario.password, 12);
+    const variable = `PASSWORD_${usuario.username.toUpperCase()}`;
+    const clave = process.env[variable] || (esProduccion ? null : usuario.password);
+    if (!clave) {
+      console.warn(`[origen] ${usuario.username}: falta ${variable} en producción, no se crea la cuenta.`);
+      continue;
+    }
+
+    const existente = await db.query('SELECT 1 FROM usuarios WHERE username = $1', [usuario.username]);
+    if (existente.rows.length > 0) continue;
+
+    const hash = await bcrypt.hash(clave, 12);
     await db.query(
       `INSERT INTO usuarios (username, password, rol, nombre)
        VALUES ($1, $2, $3, $4)
