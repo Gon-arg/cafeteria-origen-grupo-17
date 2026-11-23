@@ -36,10 +36,17 @@ router.get('/usuarios', async (req, res, next) => {
  *
  * SEGURIDAD:
  *  - Solamente un administrador puede modificar usuarios y sus roles.
+ *  - Se verifica explícitamente el rol antes de aceptar los cambios.
  *  - Los usuarios clientes no pueden autoasignarse privilegios.
  */
 router.put('/usuarios/:id', async (req, res, next) => {
   try {
+    if (!req.usuario || req.usuario.rol !== 'admin') {
+      return res.status(403).json({
+        error: 'No tenés permisos para modificar usuarios.',
+      });
+    }
+
     const { username, nombre, rol, password } = req.body || {};
     const cambios: Partial<Usuario> = {};
 
