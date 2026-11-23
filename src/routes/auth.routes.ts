@@ -1,7 +1,11 @@
-
 import express from 'express';
 import * as usuarios from '../services/usuarios.service';
-import { crearSesion, destruirSesion, obtenerSesion } from '../middleware/sesion';
+import {
+  crearSesion,
+  destruirSesion,
+  obtenerSesion,
+} from '../middleware/sesion';
+import { limitarIntentosLogin } from '../middleware/rate-limit';
 
 const router = express.Router();
 
@@ -12,11 +16,11 @@ const router = express.Router();
  *  - La verificación de credenciales utiliza el servicio de usuarios.
  *  - Las contraseñas se verifican mediante bcrypt en el servicio.
  *  - El mensaje de error es genérico para evitar la enumeración de usuarios.
- *  - El rate limiting se aplica mediante el middleware correspondiente.
+ *  - Se limitan los intentos para prevenir ataques de fuerza bruta.
  *  - El identificador de sesión se genera aleatoriamente y se regenera
  *    al iniciar sesión.
  */
-router.post('/login', async (req, res, next) => {
+router.post('/login', limitarIntentosLogin, async (req, res, next) => {
   try {
     const { username, password } = req.body || {};
 
