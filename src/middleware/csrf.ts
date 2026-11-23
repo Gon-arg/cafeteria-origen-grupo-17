@@ -25,6 +25,43 @@ export function obtenerTokenCsrf(req: Request, res: Response): string | null {
 }
 
 /**
+ * Comprueba que el origen de la petición coincida con el origen
+ * de la aplicación.
+ *
+ * Si no llega Origin, utiliza Referer como alternativa.
+ * Si ambas cabeceras están ausentes, continúa con la validación
+ * del token CSRF para mantener compatibilidad con clientes HTTP.
+ */
+function validarOrigen(req: Request, res: Response): boolean {
+  const origen = req.get('Origin') || req.get('Referer');
+
+  if (!origen) {
+    return true;
+  }
+
+  try {
+    const origenRecibido = new URL(origen).origin;
+    const origenEsperado = new URL(
+      `${req.protocol}://${req.get('host')}`,
+    ).origin;
+
+    if (origenRecibido !== origenEsperado) {
+      res.status(403).json({
+        error: 'Origen de la petición no permitido.',
+      });
+      return false;
+    }
+
+    return true;
+  } catch {
+    res.status(403).json({
+      error: 'Origen de la petición inválido.',
+    });
+    return false;
+  }
+}
+
+/**
  * Comprueba que el token presentado coincida con el de la sesión.
  */
 export function protegerContraCsrf(
@@ -43,6 +80,11 @@ export function protegerContraCsrf(
   // Se mantiene logout compatible con los tests funcionales existentes.
   if (req.path === '/api/auth/login' || req.path === '/api/auth/logout') {
     next();
+    return;
+  }
+
+  // Verifica el origen antes de procesar la operación.
+  if (!validarOrigen(req, res)) {
     return;
   }
 
