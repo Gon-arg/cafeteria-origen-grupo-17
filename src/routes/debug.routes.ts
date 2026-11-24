@@ -1,17 +1,22 @@
 import express from 'express';
 
+import { requiereSesion, requiereRol } from '../middleware/auth';
+
 const router = express.Router();
 
 /**
- * Endpoint de diagnostico.
+ * Endpoint de diagnóstico.
  *
- * CORRECCION — exposicion de informacion sensible (OWASP A01:2021 / A05:2021)
- * antes devolvia `process.env` completo (credenciales, secretos) sin autenticacion.
- * ahora solo informa que el servicio esta activo: no expone variables de entorno,
- * datos de la base, versiones ni metricas internas.
+ * CORRECCIÓN — exposición de información sensible (OWASP A01:2021 / A05:2021)
+ *  - Antes devolvía todas las variables de entorno (credenciales, secretos) sin autenticación.
+ *  - Ahora exige sesión válida y rol admin (requiereSesion + requiereRol).
+ *  - Además solo informa que el servicio está activo: no expone datos de la
+ *    base, versiones ni métricas internas.
  */
+router.use(requiereSesion, requiereRol('admin'));
+
 router.get('/', (_req, res) => {
-  res.json({ estado: 'ok' }); //responde ok para saber que els ervidor esta vivo
+  res.json({ estado: 'ok' }); // responde ok para saber que el servidor está vivo
 });
 
 export default router;

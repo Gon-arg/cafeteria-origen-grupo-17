@@ -1,7 +1,8 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
+import crypto from 'crypto';
+import { spawn } from 'child_process';
 
 import config from '../config';
 import * as catalogo from '../services/catalogo.service';
@@ -120,7 +121,7 @@ router.delete('/productos/:id', async (req, res, next) => {
  * POST /api/admin/cambiar-contrasena
  *
  * La operación requiere rol administrador.
- * La validación CSRF se incorporará mediante el middleware correspondiente.
+ * La validación CSRF se incorpora mediante el middleware correspondiente.
  */
 router.post('/cambiar-contrasena', async (req, res, next) => {
   try {
@@ -141,21 +142,68 @@ router.post('/cambiar-contrasena', async (req, res, next) => {
 /**
  * POST /api/admin/probar-conexion
  *
- * PENDIENTE DE CORRECCIÓN POR PERSONA C:
- *  - Validar el host contra una lista blanca.
- *  - Utilizar spawn() con argumentos separados y shell:false.
+ * SEGURIDAD (inyección de comandos):
+ *  - Lista blanca: solo se puede consultar a servidores conocidos.
+ *  - El host se valida además con una regex estricta: solo letras, números,
+ *    puntos y guiones, sin espacios ni metacaracteres de shell (; | & $ ` etc.).
+ *  - No puede empezar con "-" (evita que se interprete como opción de ping).
+ *  - Se usa spawn() con argumentos separados y shell:false: el host viaja como
+ *    un único argumento y nunca pasa por un intérprete de comandos.
  */
+const HOST_VALIDO = /^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$/;
+
+// Lista blanca: solo se puede hacer ping a estos destinos conocidos.
+const HOSTS_PERMITIDOS = [
+  'localhost',
+  '127.0.0.1',
+  'google.com',
+  'cloudflare.com',
+  '1.1.1.1',
+  '8.8.8.8',
+];
+
 router.post('/probar-conexion', (req, res) => {
   const { host } = req.body || {};
 
-  // Pendiente: reemplazar exec por spawn y validar el host.
-  const comando = `ping -c 3 ${host}`;
+  if (typeof host !== 'string' || !HOST_VALIDO.test(host)) {
+    return res.status(400).json({ error: 'Host inválido.' });
+  }
 
-  exec(comando, (error, stdout, stderr) => {
-    res.json({
-      comando,
-      salida: stdout,
-      error: stderr || (error ? error.message : null),
+  if (!HOSTS_PERMITIDOS.includes(host.toLowerCase())) {
+    return res.status(400).json({ error: 'Host no permitido.' });
+  }
+
+  const proceso = spawn('ping', ['-c', '3', host], {
+    shell: false,
+    timeout: 15000,
+  });
+
+  let salida = '';
+  let errores = '';
+  let respondido = false;
+
+  const responder = (cuerpo: object) => {
+    if (respondido) return;
+    respondido = true;
+    res.json(cuerpo);
+  };
+
+  proceso.stdout.on('data', (d) => { salida += d.toString(); });
+  proceso.stderr.on('data', (d) => { errores += d.toString(); });
+
+  proceso.on('error', () => {
+    responder({
+      comando: `ping -c 3 ${host}`,
+      salida,
+      error: 'No se pudo ejecutar la prueba de conexión.',
+    });
+  });
+
+  proceso.on('close', (codigo) => {
+    responder({
+      comando: `ping -c 3 ${host}`,
+      salida,
+      error: errores || (codigo !== 0 ? 'El host no respondió.' : null),
     });
   });
 });
@@ -163,31 +211,72 @@ router.post('/probar-conexion', (req, res) => {
 /**
  * POST /api/admin/subir-archivo
  *
- * PENDIENTE DE CORRECCIÓN POR PERSONA C:
- *  - Validar extensión, MIME y tamaño.
- *  - Generar un nombre aleatorio.
- *  - Evitar path traversal.
- *  - Almacenar los archivos fuera del árbol público.
+ * SEGURIDAD (subida de archivos):
+ *  - Extensión en lista blanca (solo imágenes).
+ *  - "MIME" verificado por los primeros bytes del contenido (magic bytes),
+ *    no por lo que declara el cliente.
+ *  - La extension debe coincidir con el tipo real detectado.
+ *  - Tamaño máximo de 2 MB.
+ *  - El nombre original NUNCA se usa para armar la ruta: se genera un nombre
+ *    aleatorio, lo que elimina el path traversal (../../).
  */
-router.post('/subir-archivo', express.json({ limit: '8mb' }), (req, res, next) => {
+const EXTENSIONES_PERMITIDAS: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+const TAMANO_MAXIMO = 2 * 1024 * 1024; // 2 MB
+
+function detectarMime(b: Buffer): string | null {
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (b.length >= 6 && ['GIF87a', 'GIF89a'].includes(b.subarray(0, 6).toString('ascii'))) return 'image/gif';
+  if (b.length >= 12 && b.subarray(0, 4).toString('ascii') === 'RIFF' && b.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return null;
+}
+
+router.post('/subir-archivo', express.json({ limit: '3mb' }), (req, res, next) => {
   try {
     const { nombre, contenidoBase64 } = req.body || {};
 
-    if (!nombre || !contenidoBase64) {
+    if (typeof nombre !== 'string' || typeof contenidoBase64 !== 'string' || !nombre || !contenidoBase64) {
       return res.status(400).json({ error: 'Falta el archivo.' });
+    }
+
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(contenidoBase64)) {
+      return res.status(400).json({ error: 'Contenido inválido.' });
+    }
+
+    // solo se usa el nombre para sacar la extensión (basename descarta rutas).
+    const extension = path.extname(path.basename(nombre)).toLowerCase();
+    const mimeEsperado = EXTENSIONES_PERMITIDAS[extension];
+
+    if (!mimeEsperado) {
+      return res.status(400).json({ error: 'Tipo de archivo no permitido. Solo imágenes (jpg, png, gif, webp).' });
     }
 
     const buffer = Buffer.from(contenidoBase64, 'base64');
 
+    if (buffer.length === 0 || buffer.length > TAMANO_MAXIMO) {
+      return res.status(413).json({ error: 'El archivo supera el tamaño máximo de 2 MB.' });
+    }
+
+    if (detectarMime(buffer) !== mimeEsperado) {
+      return res.status(400).json({ error: 'El contenido no coincide con el tipo de archivo.' });
+    }
+
+    const nombreSeguro = `${crypto.randomUUID()}${extension}`;
+
     fs.mkdirSync(config.uploadsDir, { recursive: true });
 
-    const destino = path.join(config.uploadsDir, nombre);
-
-    fs.writeFileSync(destino, buffer);
+    const destino = path.join(config.uploadsDir, nombreSeguro);
+    fs.writeFileSync(destino, buffer, { flag: 'wx' });
 
     res.json({
       mensaje: 'Archivo subido.',
-      url: `/uploads/${nombre}`,
+      url: `/uploads/${nombreSeguro}`,
       bytes: buffer.length,
     });
   } catch (err) {
