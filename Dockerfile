@@ -25,9 +25,11 @@ COPY tests ./tests
 COPY docker-compose.yml Dockerfile ./
 
 # Carpeta de archivos subidos
-RUN mkdir -p /app/uploads
+RUN mkdir -p /app/uploads && chown -R node:node /app/uploads && chmod 755 /app/uploads
 
 EXPOSE 3000
+
+USER node
 
 # Liveness del contenedor: /api/salud
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
