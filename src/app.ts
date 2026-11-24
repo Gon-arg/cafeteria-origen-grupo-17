@@ -3,6 +3,9 @@ import express from 'express';
 
 import config from './config';
 import { rutaNoEncontrada, manejadorErrores } from './middleware/errores';
+import { obtenerSesion } from './middleware/sesion';
+import { obtenerTokenCsrf, protegerContraCsrf } from './middleware/csrf';
+
 import authRoutes from './routes/auth.routes';
 import productosRoutes from './routes/productos.routes';
 import pedidosRoutes from './routes/pedidos.routes';
@@ -14,14 +17,7 @@ import debugRoutes from './routes/debug.routes';
 const app = express();
 
 /**
- * FALLA — Ajustes de configuración (OWASP A05:2021)
- *
- * Faltan:
- *  - helmet (cabeceras de seguridad: CSP, X-Content-Type-Options, HSTS...)
- *  - límite de tamaño del cuerpo más estricto por ruta
- *  - rate limiting global
- *  - política de CORS restringida al propio origen
- *  - helmet CSP además sirve como capa extra frente al XSS
+ * Configuración de la aplicación.
  */
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -29,14 +25,44 @@ app.use(express.urlencoded({ extended: true }));
 // Archivos subidos por el panel de administración.
 app.use('/uploads', express.static(config.uploadsDir));
 
-// Sitio web estático
+// Sitio web estático.
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- API --------------------------------------------------------------------
+
 app.get('/api/salud', (req, res) => {
-  res.json({ ok: true, servicio: 'cafeteria-origen', hora: new Date().toISOString() });
+  res.json({
+    ok: true,
+    servicio: 'cafeteria-origen',
+    hora: new Date().toISOString(),
+  });
 });
 
+/**
+ * Entrega el token CSRF asociado a la sesión autenticada.
+ */
+app.get('/api/csrf-token', (req, res) => {
+  const sesion = obtenerSesion(req);
+
+  if (!sesion) {
+    res.status(401).json({ error: 'Necesitás iniciar sesión.' });
+    return;
+  }
+
+  const token = obtenerTokenCsrf(req, res);
+
+  if (!token) {
+    res.status(401).json({ error: 'Necesitás iniciar sesión.' });
+    return;
+  }
+
+  res.json({ csrfToken: token, token });
+});
+
+// Protección de las peticiones que modifican información.
+app.use(protegerContraCsrf);
+
+// Registro de rutas.
 app.use('/api/auth', authRoutes);
 app.use('/api/productos', productosRoutes);
 app.use('/api/pedidos', pedidosRoutes);
